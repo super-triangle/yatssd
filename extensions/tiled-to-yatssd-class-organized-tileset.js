@@ -1,7 +1,7 @@
 /*
- * tiled-to-yatssd-export.js
+ * tiled-to-yatssd-class-organized-tileset.js
  *
- * This extension adds the "YATSSD resource and palette files - regular" type to the "Export As" menu
+ * This extension adds the "YATSSD class-organized resource and palette files - regular" type to the "Export As" menu
  *
  * Copyright (c) 2020 Jay van Hutten
  * Copyright (c) 2022 Victor Luchits
@@ -26,26 +26,85 @@
  * 
  */
 
-function dec(v) {
-    return v.toString(10);
+function yatssdcHelpers() {
+    this.dec = function(v) {
+        return v.toString(10);
+    };
+    
+    this.hex = function(v) {
+       return "0x" + v.toString(16);
+    };
+    
+    this.hex2 = function(v) {
+        return "0x" + v.toString(16).padStart(2, "0");
+    };
+    
+    
+    this.cachedImages = new Map();
+    this.classes = new Map();
+    
+    this.getImage = function(imageFilename) {
+        if (this.cachedImages.has(imageFilename)) {
+            return this.cachedImages.get(imageFilename);
+        }
+        var newImage = new Image(imageFilename);
+        this.cachedImages.set(imageFilename, newImage);
+        return newImage;
+    }
+    
+    this.buildTileName = function(baseName, tileClass) {
+        let classCount = 0;
+        if (this.classes.has(tileClass)) {
+            classCount = this.classes.get(tileClass) + 1;
+        }
+        this.classes.set(tileClass, classCount);
+    
+        if (tileClass.length > 0) {
+            tileClass = "_" + tileClass;
+        }
+
+        return baseName + tileClass + "_Res" + this.dec(classCount);
+    }
+    
+    this.buildEmptyTile = function(name, tileset) {
+        return this.buildTileResource(name, tileset, null, null, null);
+    }
+    
+    this.buildTileResource = function(name, tileset, tile, image, revColorTable) {
+        var tilesetData = "uint8_t "+name+"[] __attribute__((aligned(16))) = {\n"
+    
+        for (let i = 0; i < tileset.tileHeight; i++)
+        {
+            for (let j = 0; j <  tileset.tileWidth; j++)
+            {
+                if (image) {
+                    let p = image.pixel(tile.imageRect.x+j, tile.imageRect.y+i)
+                    tilesetData += hex2(revColorTable[p])+","
+                } else {
+                    tilesetData += hex2(0)+","
+                }
+            }
+            tilesetData += "\n"
+        }
+    
+        if (tilesetData.slice(-2) == ",\n")
+            tilesetData = tilesetData.slice(0,-2) + "\n";
+        tilesetData += "};\n\n"
+        return tilesetData;
+    }
 }
 
-function hex(v) {
-   return "0x" + v.toString(16);
-}
 
-function hex2(v) {
-    return "0x" + v.toString(16).padStart(2, "0");
-}
-
-var customTilesFormat = {
-    name: "YATSSD tileset and palette files",
+var classOrganizedCustomTilesFormat = {
+    name: "YATSSD class-organized tileset and palette",
     extension: "h",
+
     write:
 
     function(tileset, filename) {
         console.time("Export completed in");
 
+        let helpers = new yatssdcHelpers();
         // Split full filename path into the filename (without extension) and the directory
         let fileBaseName = FileInfo.completeBaseName(filename).replace(/[^a-zA-Z0-9-_]/g, "_");
         let filePath = FileInfo.path(filename);
@@ -56,9 +115,10 @@ var customTilesFormat = {
             resourceName = "_" + resourceName;
         }
 
-        let imagePath = tileset.image;
-        let image = new Image(imagePath);
-        let colorTable = image.colorTable();
+        let tilesetImage = tileset.image;
+
+        let primaryImage = helpers.getImage(tilesetImage);
+        let colorTable = primaryImage.colorTable();
         let backgroundColor = tileset.backgroundColor;
 
         let paletteFileData = "";
@@ -77,9 +137,9 @@ var customTilesFormat = {
                 value = parseInt(backgroundColor.toString().slice(1),16);
             }
 
-            rgb.push(hex2((value >> 16) & 0xff));
-            rgb.push(hex2((value >> 8 ) & 0xff));
-            rgb.push(hex2((value >> 0 ) & 0xff));
+            rgb.push(helpers.hex2((value >> 16) & 0xff));
+            rgb.push(helpers.hex2((value >> 8 ) & 0xff));
+            rgb.push(helpers.hex2((value >> 0 ) & 0xff));
             paletteFileData += rgb.join(",")+",\n";
             lastind = ind;
         }
@@ -106,53 +166,27 @@ var customTilesFormat = {
 
         let tilesetData = "";
 
-        let x = 0
-        let y = 0
         let id = 0
         let res = []
 
-        // empty dummy tile
-        let name = resourceName+"_Res"+dec(id)
+        // Inject empty dummy tile
+        let name = helpers.buildTileName(resourceName, "EmptyTile");
         res.push(name)
+        tilesetData += helpers.buildEmptyTile(name, tileset);
 
-        tilesetData += "uint8_t "+name+"[] __attribute__((aligned(16))) = {\n"
-        for (let i = 0; i < tileset.tileHeight; i++)
+        for (let tx = 0; tx < tileset.tiles.length; tx++)
         {
-            for (j = 0; j < tileset.tileWidth; j++) {
-                tilesetData += hex2(0)+","
+            let tile = tileset.tiles[tx];
+            if (!tile) {
+                continue;
             }
-            tilesetData += "\n"
-        }
-        if (tilesetData.slice(-2) == ",\n")
-            tilesetData = tilesetData.slice(0,-2) + "\n";
-        tilesetData += "};\n\n"
+            var image = tile.imageFileName ? helpers.getImage(tile.imageFileName) : primaryImage;
+            let name = helpers.buildTileName(resourceName, tile.className);
+            res.push(name)
 
-        id = 1
+            tilesetData += helpers.buildTileResource(name, tileset, tile, image, revColorTable);
 
-        for (let y = 0; y < image.height; y += tileset.tileHeight)
-        {
-            for (let x = 0; x < image.width; x += tileset.tileWidth)
-            {
-                let name = resourceName+"_Res"+dec(id)
-                res.push(name)
-
-                tilesetData += "uint8_t "+name+"[] __attribute__((aligned(16))) = {\n"
-
-                for (let i = 0; i < tileset.tileHeight; i++)
-                {
-                    for (let j = 0; j < tileset.tileWidth; j++)
-                    {
-                        let p = image.pixel(x+j, y+i)
-                        tilesetData += hex2(revColorTable[p])+","
-                    }
-                    tilesetData += "\n"
-                }
-
-                if (tilesetData.slice(-2) == ",\n")
-                    tilesetData = tilesetData.slice(0,-2) + "\n";
-                tilesetData += "};\n\n"
-                id += 1
-            }
+            id += 1
         }
 
         resourceFileData += tilesetData + "\n";
@@ -178,4 +212,4 @@ var customTilesFormat = {
     }
 }
 
-tiled.registerTilesetFormat("yatssd", customTilesFormat)
+tiled.registerTilesetFormat("yatssdclass", classOrganizedCustomTilesFormat)
